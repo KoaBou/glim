@@ -282,7 +282,20 @@ void StandardViewer::set_callbacks() {
                                                         gtsam::NonlinearFactorGraph& new_factors,
                                                         gtsam::Values& new_values,
                                                         std::map<std::uint64_t, double>& new_stamps) {
-    //
+
+    // Process new values for visualization
+    std::vector<int> update_gnss_ids;
+    for (const auto& [key, value] : new_values) {
+      const gtsam::Symbol symbol(key);
+    
+      if (symbol.chr() == 'g') {
+        const auto gnss_pose = value.cast<gtsam::Pose3>();
+        gnss_poses[symbol.index()] = gnss_pose.matrix().cast<float>();
+        update_gnss_ids.push_back(symbol.index());
+      }
+    }
+
+    // Process new factors for visualization
     std::vector<std::pair<std::weak_ptr<gtsam::NonlinearFactor>, FactorLineGetter>> new_factor_lines;
     new_factor_lines.reserve(new_factors.size());
 
@@ -333,7 +346,7 @@ void StandardViewer::set_callbacks() {
 
           new_factor_lines.emplace_back(factor, l);
           continue;
-        }
+          }
 #endif
       } else if (factor->keys().size() == 2) {
         const gtsam::Symbol symbol0(factor->keys()[0]);
@@ -360,10 +373,38 @@ void StandardViewer::set_callbacks() {
         };
 
         new_factor_lines.emplace_back(factor, l);
+      } else if (factor->keys().size() == 3) {
+        const gtsam::Symbol symbol0(factor->keys()[0]); // X_last
+        const gtsam::Symbol symbol1(factor->keys()[1]); // X_current
+        const gtsam::Symbol symbol2(factor->keys()[2]); // G_gnss
+        
+        if (symbol0.chr() == 'x' && symbol1.chr() == 'x' && symbol2.chr() == 'g') {
+          const int idx0 = symbol0.index();
+          const int idx1 = symbol1.index();
+          const int idx2 = symbol2.index();
+
+          const auto l = [this, idx0, idx1, idx2](const gtsam::NonlinearFactor*) -> std::optional<FactorLine> {
+            const auto found0 = odometry_poses.find(idx0);
+            const auto found1 = odometry_poses.find(idx1);
+            const auto found_gnss = gnss_poses.find(idx2);
+            
+            if (found0 == odometry_poses.end() || found1 == odometry_poses.end() || found_gnss == gnss_poses.end()) return std::nullopt;
+            
+            Eigen::Vector3f mid_x = (found0->second.translation() + found1->second.translation()) / 2.0f;
+            return std::make_tuple(
+              mid_x,
+              found_gnss->second.translation(),
+              Eigen::Vector4f(0.0f, 1.0f, 0.0f, factors_alpha),
+              Eigen::Vector4f(1.0f, 0.0f, 0.0f, factors_alpha)
+            );
+          };
+
+          new_factor_lines.emplace_back(factor, l);
+        }
       }
     }
 
-    invoke([this, new_factor_lines] {
+    invoke([this, new_factor_lines, update_gnss_ids] {
       auto remove_loc = std::remove_if(odometry_factor_lines.begin(), odometry_factor_lines.end(), [](const auto& factor) { return factor.first.expired(); });
       odometry_factor_lines.erase(remove_loc, odometry_factor_lines.end());
       odometry_factor_lines.insert(odometry_factor_lines.end(), new_factor_lines.begin(), new_factor_lines.end());
@@ -392,6 +433,15 @@ void StandardViewer::set_callbacks() {
       }
 
       auto viewer = guik::viewer();
+      for (int gnss_id : update_gnss_ids) {
+        if (gnss_poses.count(gnss_id)) {
+          viewer->update_drawable(
+            "opt_gnss_" + std::to_string(gnss_id),
+            glk::Primitives::coordinate_system(),
+            guik::VertexColor(gnss_poses[gnss_id] * Eigen::UniformScaling<float>(0.8f))
+          );
+        }
+      }
       viewer->update_drawable("odometry_factors", std::make_shared<glk::ThinLines>(line_vertices, line_colors), guik::VertexColor().set_alpha(factors_alpha));
     });
   });
@@ -426,6 +476,20 @@ void StandardViewer::set_callbacks() {
         viewer->remove_drawable("odometry_keyframe_coord_" + std::to_string(keyframe->id));
         odometry_poses.erase(keyframe->id);
       }
+    });
+  });
+
+  // Insert GNSS callback
+  OdometryEstimationCallbacks::on_insert_gnss.add([this](const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var) {
+    invoke([this, pos, var] {
+      auto viewer = guik::LightViewer::instance();
+      auto gnss_pose = Eigen::Isometry3f::Identity();
+      gnss_pose.translation() = pos.cast<float>();
+      viewer->update_drawable(
+        "gnss_" + std::to_string(gnss_id),
+        glk::Primitives::wire_sphere(),
+        guik::FlatColor(std::min(1.0, var[0] / 5.0), 1.0f, std::min(1.0, var[1] / 5.0), 0.4f, gnss_pose * Eigen::UniformScaling<float>(0.5)));
+      gnss_id++;
     });
   });
 

@@ -64,6 +64,14 @@ struct OdometryEstimationCallbacks {
   static CallbackSlot<void(const double stamp, const Eigen::Vector3d& linear_acc, const Eigen::Vector3d& angular_vel)> on_insert_imu;
 
   /**
+   * @brief GNSS input callback
+   * @param stamp  Timestamp
+   * @param pos    Position
+   * @param var    Position variance
+   */
+  static CallbackSlot<void(const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var)> on_insert_gnss;
+
+  /**
    * @brief PointCloud input callback
    * @param frame  Preprocessed point cloud frame
    */

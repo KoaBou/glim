@@ -5,9 +5,11 @@
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/nonlinear/LinearContainerFactor.h>
+#include <gtsam/navigation/GPSFactor.h>
 
 #include <gtsam_points/types/point_cloud_cpu.hpp>
 #include <gtsam_points/factors/linear_damping_factor.hpp>
+#include <gtsam_points/factors/pose3_interpolation_factor.hpp>
 #include <gtsam_points/optimizers/incremental_fixed_lag_smoother_with_fallback.hpp>
 
 #include <glim/util/config.hpp>
@@ -30,6 +32,7 @@ using Callbacks = OdometryEstimationCallbacks;
 using gtsam::symbol_shorthand::B;  // IMU bias
 using gtsam::symbol_shorthand::V;  // IMU velocity   (v_world_imu)
 using gtsam::symbol_shorthand::X;  // IMU pose       (T_world_imu)
+using gtsam::symbol_shorthand::G;  // GNSS pose       (T_world_imu)
 
 OdometryEstimationIMUParams::OdometryEstimationIMUParams() {
   // sensor config
@@ -113,6 +116,71 @@ void OdometryEstimationIMU::insert_imu(const double stamp, const Eigen::Vector3d
     init_estimation->insert_imu(stamp, linear_acc, angular_vel);
   }
   imu_integration->insert_imu(stamp, linear_acc, angular_vel);
+}
+
+void OdometryEstimationIMU::insert_gnss(const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var) {
+  if (!gnss_intialized) {
+    geo_converter.Reset(pos[0], pos[1], pos[2]);
+    gnss_intialized = true;
+    logger->info("GNSS initialized at lat={} lon={} alt={}", pos[0], pos[1], pos[2]);
+  }
+
+  double x, y, z;
+  geo_converter.Forward(pos[0], pos[1], pos[2], x, y, z);
+
+  Eigen::Matrix<double, 7, 1> gnss_data;
+  gnss_data << stamp, x, y, z, var[0], var[1], var[2];
+  gnss_queue.push_back(gnss_data);
+
+  Callbacks::on_insert_gnss(stamp, pos, var);
+  
+  // Remove old GNSS data
+  while (gnss_queue.front()[0] < stamp - 5.0) {
+    gnss_queue.pop_front();
+  }
+}
+
+gtsam::NonlinearFactorGraph OdometryEstimationIMU::create_gnss_factor(const int current, gtsam::Values& new_values, std::map<std::uint64_t, double>& new_stamp) {
+  gtsam::NonlinearFactorGraph gnss_factors;
+  const int last = current - 1;
+
+  if (current <= 0) return gnss_factors;
+
+  while (!gnss_queue.empty()) {
+    const auto& gnss_data = gnss_queue.front();
+
+    if (gnss_data[0]  <= frames[current]->stamp) {
+      if (gnss_data[0] > frames[last]->stamp) {
+        double duration = frames[current]->stamp - frames[last]->stamp;
+        if (duration < 1e-6) duration = 1e-6;
+
+        double weight = (gnss_data[0] - frames[last]->stamp) / duration;
+
+        auto last_pose = gtsam::Pose3(frames[last]->T_world_imu.matrix());
+        auto curr_pose = gtsam::Pose3(frames[current]->T_world_imu.matrix());
+        auto interp_pose = gtsam_points::Pose3InterpolationFactor::initial_guess(last_pose, curr_pose, weight);
+
+        new_values.insert(G(gnss_id), interp_pose);
+        new_stamp[G(gnss_id)] = gnss_data[0];
+
+        auto interp_noise = gtsam::noiseModel::Isotropic::Precision(6, 1e3);
+        gnss_factors.add(gtsam_points::Pose3InterpolationFactor(X(last), X(current), G(gnss_id), weight, interp_noise));
+
+        gtsam::Point3 gnss_pose(gnss_data[1], gnss_data[2], gnss_data[3]);
+        auto gnss_noise = gtsam::noiseModel::Diagonal::Sigmas(
+          gtsam::Vector3(std::sqrt(gnss_data[4]), std::sqrt(gnss_data[5]), std::sqrt(gnss_data[6])));
+        gnss_factors.add(gtsam::GPSFactor(G(gnss_id), gnss_pose, gnss_noise));
+
+        gnss_id++;
+      }
+
+      gnss_queue.pop_front();
+    } else {
+      break;
+    }
+  }
+
+  return gnss_factors;
 }
 
 EstimationFrame::ConstPtr OdometryEstimationIMU::insert_frame(const PreprocessedFrame::Ptr& raw_frame, std::vector<EstimationFrame::ConstPtr>& marginalized_frames) {
@@ -321,6 +389,12 @@ EstimationFrame::ConstPtr OdometryEstimationIMU::insert_frame(const Preprocessed
   frames.push_back(new_frame);
 
   new_factors.add(create_factors(current, imu_factor, new_values));
+
+  // GNSS factors
+  auto gnss_factors = create_gnss_factor(current, new_values, new_stamps);
+  if (gnss_factors.size()) {
+    new_factors.add(gnss_factors);
+  }
 
   // Update smoother
   Callbacks::on_smoother_update(*smoother, new_factors, new_values, new_stamps);

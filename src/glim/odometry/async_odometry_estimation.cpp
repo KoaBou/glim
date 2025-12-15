@@ -32,6 +32,12 @@ void AsyncOdometryEstimation::insert_imu(const double stamp, const Eigen::Vector
   input_imu_queue.push_back(imu_data);
 }
 
+void AsyncOdometryEstimation::insert_gnss(const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var) {
+  Eigen::Matrix<double, 7, 1> gnss_data;
+  gnss_data << stamp, pos, var;
+  input_gnss_queue.push_back(gnss_data);
+}
+
 void AsyncOdometryEstimation::insert_frame(const PreprocessedFrame::Ptr& frame) {
   input_frame_queue.push_back(frame);
 }
@@ -61,6 +67,7 @@ void AsyncOdometryEstimation::run() {
 
   while (!kill_switch) {
     auto imu_frames = input_imu_queue.get_all_and_clear();
+    auto gnss_frames = input_gnss_queue.get_all_and_clear();
     auto new_raw_frames = input_frame_queue.get_all_and_clear();
     raw_frames.insert(raw_frames.end(), new_raw_frames.begin(), new_raw_frames.end());
     internal_frame_queue_size = raw_frames.size();
@@ -74,7 +81,7 @@ void AsyncOdometryEstimation::run() {
 #ifdef GLIM_USE_OPENCV
       images.empty() &&
 #endif
-      imu_frames.empty() && raw_frames.empty()) {
+      imu_frames.empty() && gnss_frames.empty() && raw_frames.empty()) {
       if (end_of_sequence) {
         break;
       }
@@ -90,6 +97,13 @@ void AsyncOdometryEstimation::run() {
       odometry_estimation->insert_imu(stamp, linear_acc, angular_vel);
 
       last_imu_time = stamp;
+    }
+
+    for (const auto& gnss : gnss_frames) {
+      const double stamp = gnss[0];
+      const Eigen::Vector3d pos = gnss.block<3, 1>(1, 0);
+      const Eigen::Vector3d var = gnss.block<3, 1>(4, 0);
+      odometry_estimation->insert_gnss(stamp, pos, var);
     }
 
 #ifdef GLIM_USE_OPENCV

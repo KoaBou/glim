@@ -5,6 +5,7 @@
 #include <thread>
 #include <memory>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <optional>
 #include <boost/weak_ptr.hpp>
@@ -79,6 +80,9 @@ private:
   Eigen::Matrix<double, 6, 1> last_imu_bias;
   double last_median_distance;
   std::vector<double> last_voxel_resolutions;
+
+  int gnss_id {0};
+  std::map<int, Eigen::Isometry3f> gnss_poses;
 
   using FactorLine = std::tuple<Eigen::Vector3f, Eigen::Vector3f, Eigen::Vector4f, Eigen::Vector4f>;
   using FactorLineGetter = std::function<std::optional<FactorLine>(const gtsam::NonlinearFactor*)>;

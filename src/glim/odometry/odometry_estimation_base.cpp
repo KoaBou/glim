@@ -20,6 +20,10 @@ void OdometryEstimationBase::insert_imu(const double stamp, const Eigen::Vector3
   Callbacks::on_insert_imu(stamp, linear_acc, angular_vel);
 }
 
+void OdometryEstimationBase::insert_gnss(const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var) {
+  Callbacks::on_insert_gnss(stamp, pos, var);
+}
+
 EstimationFrame::ConstPtr OdometryEstimationBase::insert_frame(const PreprocessedFrame::Ptr& frame, std::vector<EstimationFrame::ConstPtr>& marginalized_states) {
   Callbacks::on_insert_frame(frame);
   return nullptr;

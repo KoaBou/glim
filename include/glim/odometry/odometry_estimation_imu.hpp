@@ -1,8 +1,11 @@
 #pragma once
 
 #include <map>
+#include <deque>
 #include <memory>
 #include <random>
+
+#include <GeographicLib/LocalCartesian.hpp>
 
 #include <glim/odometry/odometry_estimation_base.hpp>
 
@@ -73,12 +76,14 @@ public:
   virtual ~OdometryEstimationIMU() override;
 
   virtual void insert_imu(const double stamp, const Eigen::Vector3d& linear_acc, const Eigen::Vector3d& angular_vel) override;
+  virtual void insert_gnss(const double stamp, const Eigen::Vector3d& pos, const Eigen::Vector3d& var) override;
   virtual EstimationFrame::ConstPtr insert_frame(const PreprocessedFrame::Ptr& frame, std::vector<EstimationFrame::ConstPtr>& marginalized_frames) override;
   virtual std::vector<EstimationFrame::ConstPtr> get_remaining_frames() override;
 
 protected:
   virtual void create_frame(EstimationFrame::Ptr& frame) {}
   virtual gtsam::NonlinearFactorGraph create_factors(const int current, const std::shared_ptr<gtsam::ImuFactor>& imu_factor, gtsam::Values& new_values) = 0;
+  virtual gtsam::NonlinearFactorGraph create_gnss_factor(const int current, gtsam::Values& new_values, std::map<std::uint64_t, double>& new_stamp);
 
   virtual void fallback_smoother() {}
   virtual void update_frames(const int current, const gtsam::NonlinearFactorGraph& new_factors);
@@ -90,6 +95,11 @@ protected:
 protected:
   std::unique_ptr<OdometryEstimationIMUParams> params;
 
+  // Geographic converter
+  std::deque<Eigen::Matrix<double, 7, 1>> gnss_queue;
+  GeographicLib::LocalCartesian geo_converter;
+  bool gnss_intialized {false};
+
   // Sensor extrinsic params
   Eigen::Isometry3d T_lidar_imu;
   Eigen::Isometry3d T_imu_lidar;
@@ -97,6 +107,7 @@ protected:
   // Frames & keyframes
   int marginalized_cursor;
   std::vector<EstimationFrame::Ptr> frames;
+  uint64_t gnss_id {0};
 
   // Utility classes
   std::unique_ptr<InitialStateEstimation> init_estimation;
